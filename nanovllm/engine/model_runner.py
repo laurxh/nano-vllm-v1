@@ -23,7 +23,8 @@ class ModelRunner:
         self.rank = rank
         self.event = event
 
-        dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
+        if self.world_size > 1:
+            dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
         torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
@@ -67,7 +68,8 @@ class ModelRunner:
         if not self.enforce_eager:
             del self.graphs, self.graph_pool
         torch.cuda.synchronize()
-        dist.destroy_process_group()
+        if self.world_size > 1:
+            dist.destroy_process_group()
 
     def loop(self):
         while True:
@@ -198,19 +200,39 @@ class ModelRunner:
 
     @torch.inference_mode()
     def run_model(self, input_ids: torch.Tensor, positions: torch.Tensor):
-        if self.enforce_eager or input_ids.size(0) > 512:
+        context = get_context()
+        use_cudagraph = (
+            not self.enforce_eager
+            and input_ids.size(0) <= 512
+            and context.block_tables is not None
+            and context.max_seqlen_q == 1
+            and context.cu_seqlens_q is not None
+            and context.cu_seqlens_q.numel() == input_ids.size(0) + 1
+        )
+        if not use_cudagraph:
             return self.model.compute_logits(self.model(input_ids, positions))
         else:
             bs = input_ids.size(0)
-            context = get_context()
             graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
             graph_vars = self.graph_vars
             graph_vars["input_ids"][:bs] = input_ids
             graph_vars["positions"][:bs] = positions
             graph_vars["slot_mapping"].fill_(-1)
             graph_vars["slot_mapping"][:bs] = context.slot_mapping
-            graph_vars["context_lens"].zero_()
+            graph_vars["context_lens"].fill_(1)
             graph_vars["context_lens"][:bs] = context.context_lens
+            graph_vars["cu_seqlens"][:bs + 1] = context.cu_seqlens_q
+            graph_vars["seq_need_compute_logits"][:bs] = context.seq_need_compute_logits
+            set_context(
+                cu_seqlens_q=graph_vars["cu_seqlens"][:bs + 1],
+                cu_seqlens_k=graph_vars["cu_seqlens"][:bs + 1],
+                max_seqlen_q=context.max_seqlen_q,
+                max_seqlen_k=context.max_seqlen_k,
+                slot_mapping=graph_vars["slot_mapping"][:bs],
+                context_lens=graph_vars["context_lens"][:bs],
+                block_tables=graph_vars["block_tables"][:bs, :context.block_tables.size(1)],
+                seq_need_compute_logits=graph_vars["seq_need_compute_logits"][:bs],
+            )
             graph_vars["block_tables"][:bs, :context.block_tables.size(1)] = context.block_tables
             graph.replay()
             return self.model.compute_logits(graph_vars["outputs"][:bs])
@@ -232,9 +254,12 @@ class ModelRunner:
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
         input_ids = torch.zeros(max_bs, dtype=torch.int64)
         positions = torch.zeros(max_bs, dtype=torch.int64)
-        slot_mapping = torch.zeros(max_bs, dtype=torch.int32)
-        context_lens = torch.zeros(max_bs, dtype=torch.int32)
-        block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32)
+        slot_mapping = torch.arange(max_bs, dtype=torch.int32)
+        context_lens = torch.ones(max_bs, dtype=torch.int32)
+        cu_seqlens = torch.arange(max_bs + 1, dtype=torch.int32)
+        seq_need_compute_logits = torch.arange(max_bs, dtype=torch.int32)
+        block_tables = torch.full((max_bs, max_num_blocks), -1, dtype=torch.int32)
+        block_tables[:, 0] = torch.arange(max_bs, dtype=torch.int32) // self.block_size
         outputs = torch.zeros(max_bs, hf_config.hidden_size)
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         self.graphs = {}
@@ -242,7 +267,16 @@ class ModelRunner:
 
         for bs in reversed(self.graph_bs):
             graph = torch.cuda.CUDAGraph()
-            set_context(slot_mapping=slot_mapping[:bs], context_lens=context_lens[:bs], block_tables=block_tables[:bs])
+            set_context(
+                cu_seqlens_q=cu_seqlens[:bs + 1],
+                cu_seqlens_k=cu_seqlens[:bs + 1],
+                max_seqlen_q=1,
+                max_seqlen_k=1,
+                slot_mapping=slot_mapping[:bs],
+                context_lens=context_lens[:bs],
+                block_tables=block_tables[:bs, :1],
+                seq_need_compute_logits=seq_need_compute_logits[:bs],
+            )
             outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
             with torch.cuda.graph(graph, self.graph_pool):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture
@@ -258,5 +292,7 @@ class ModelRunner:
             slot_mapping=slot_mapping,
             context_lens=context_lens,
             block_tables=block_tables,
+            cu_seqlens=cu_seqlens,
+            seq_need_compute_logits=seq_need_compute_logits,
             outputs=outputs,
         )

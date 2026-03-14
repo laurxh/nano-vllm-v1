@@ -19,9 +19,11 @@ class Config:
     chunked_prefill: bool = False
 
     def __post_init__(self):
-        assert os.path.isdir(self.model)
+        self.model = os.path.abspath(os.path.expanduser(self.model))
+        if not os.path.isdir(self.model):
+            raise FileNotFoundError(f"Model directory does not exist: {self.model}")
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
-        self.hf_config = AutoConfig.from_pretrained(self.model)
+        self.hf_config = AutoConfig.from_pretrained(self.model, local_files_only=True)
         self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
         # assert self.max_num_batched_tokens >= self.max_model_len

@@ -47,7 +47,13 @@ class RequestMetrics:
     @property
     def latency(self):
         return self.completion_time - self.submission_time
-    
+
+
+def percentile_ms(values, q):
+    if not values:
+        return float('nan')
+    return float(np.percentile(values, q)) * 1000
+
 
 def warm_up(engine, args):
     # --- Generate random prompts ---
@@ -56,7 +62,7 @@ def warm_up(engine, args):
     # sampling_params = [SamplingParams(temperature=0.6, ignore_eos=True, max_tokens=randint(100, MAX_OUTPUT_LEN)) for _ in range(NUM_REQUESTS)]
     sampling_params = [SamplingParams(temperature=0.6, ignore_eos=True, max_tokens=args.random_output_len) for _ in range(args.num_requests)]
     outputs = engine.generate(prompts, sampling_params)
-    
+
 
 def main():
     """Main function to run the serving benchmark."""
@@ -155,6 +161,8 @@ def main():
     avg_ttft = np.mean([m.ttft for m in metrics.values() if m.first_token_time != -1])
     avg_tpot = np.mean([m.tpot for m in metrics.values() if not np.isnan(m.tpot)])
     avg_latency = np.mean([m.latency for m in metrics.values() if m.completion_time != -1])
+    ttfts = [m.ttft for m in metrics.values() if m.first_token_time != -1]
+    latencies = [m.latency for m in metrics.values() if m.completion_time != -1]
     throughput = (total_input_tokens + total_output_tokens) / total_time
 
     print("--- Benchmark Results ---")
@@ -162,9 +170,31 @@ def main():
     print(f"Requests sent: {requests_sent}")
     print(f"Throughput: {throughput:.2f} tokens/s")
     print(f"Average TTFT: {avg_ttft * 1000:.2f} ms")
+    print(f"P50 TTFT: {percentile_ms(ttfts, 50):.2f} ms")
+    print(f"P95 TTFT: {percentile_ms(ttfts, 95):.2f} ms")
+    print(f"P99 TTFT: {percentile_ms(ttfts, 99):.2f} ms")
     print(f"Average TPOT: {avg_tpot * 1000:.2f} ms")
     print(f"Average latency: {avg_latency:.2f} s")
+    print(f"P50 latency: {np.percentile(latencies, 50):.2f} s")
+    print(f"P95 latency: {np.percentile(latencies, 95):.2f} s")
+    print(f"P99 latency: {np.percentile(latencies, 99):.2f} s")
     print("-------------------------\n")
 
 if __name__ == "__main__":
     main()
+"""
+--- Benchmark Results ---
+Total time: 126.41s
+Requests sent: 1000
+Throughput: 2025.14 tokens/s
+Average TTFT: 31131.25 ms
+P50 TTFT: 31177.15 ms
+P95 TTFT: 60022.23 ms
+P99 TTFT: 62091.65 ms
+Average TPOT: 6.63 ms
+Average latency: 31.97 s
+P50 latency: 31.99 s
+P95 latency: 60.68 s
+P99 latency: 62.99 s
+-------------------------
+"""
