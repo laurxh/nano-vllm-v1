@@ -126,8 +126,7 @@ class BlockManager:
         # allocate new_blocks
         for i in range(seq.num_cached_tokens, seq.num_cached_tokens + seq.num_new_tokens, self.block_size):
             token_ids = seq[i: min(i + self.block_size, seq.num_cached_tokens + seq.num_new_tokens)]
-            if i != seq.num_cached_tokens:
-                h = self.compute_hash(token_ids, h) if len(token_ids) == self.block_size else -1
+            h = self.compute_hash(token_ids, h) if len(token_ids) == self.block_size else -1
             block_id = self.free_block_ids[0]
             block = self._allocate_block(block_id)
             if h != -1:
@@ -175,7 +174,6 @@ class BlockManager:
                     if i // self.block_size < len(seq.block_table) else -1
             if current_block_id != -1:
                 current_block = self.blocks[current_block_id]
-                assert current_block.hash == -1
             if len(token_ids) % self.block_size == 0:
                 previous_block_id = seq.block_table[i // self.block_size - 1] if i >= self.block_size else -1
                 prefix = self.blocks[previous_block_id].hash if previous_block_id != -1 else -1
@@ -184,9 +182,15 @@ class BlockManager:
                     block_id = self.free_block_ids[0]
                     current_block = self._allocate_block(block_id)
                     seq.block_table.append(block_id)
+                else:
+                    assert current_block.hash in (-1, h)
+                    assert current_block.token_ids in ([], token_ids)
                 current_block.update(h, token_ids)
                 self.hash_to_block_id[h] = current_block.block_id
-            elif current_block_id == -1:
+            else:
+                if current_block_id == -1:
                     block_id = self.free_block_ids[0]
                     self._allocate_block(block_id)
                     seq.block_table.append(block_id)
+                else:
+                    assert current_block.hash == -1
