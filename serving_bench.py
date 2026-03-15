@@ -183,18 +183,31 @@ def main():
 if __name__ == "__main__":
     main()
 """
+chunked prefill
+Total time: 25.89s
+Requests sent: 500
+Throughput: 22247.67 tokens/s
+Average TTFT: 56.48 ms
+P50 TTFT: 51.10 ms
+P95 TTFT: 93.67 ms
+P99 TTFT: 111.61 ms
+Average TPOT: 8.40 ms
+Average latency: 1.12 s
+P50 latency: 1.09 s
+P95 latency: 1.74 s
+P99 latency: 1.95 s
+------------------------
 --- Benchmark Results ---
-Total time: 126.41s
-Requests sent: 1000
-Throughput: 2025.14 tokens/s
-Average TTFT: 31131.25 ms
-P50 TTFT: 31177.15 ms
-P95 TTFT: 60022.23 ms
-P99 TTFT: 62091.65 ms
-Average TPOT: 6.63 ms
-Average latency: 31.97 s
-P50 latency: 31.99 s
-P95 latency: 60.68 s
-P99 latency: 62.99 s
--------------------------
+Total time: 26.03s
+Requests sent: 500
+Throughput: 22131.58 tokens/s
+Average TTFT: 128.00 ms
+P50 TTFT: 100.39 ms
+P95 TTFT: 322.80 ms
+P99 TTFT: 386.04 ms
+Average TPOT: 16.51 ms
+Average latency: 2.22 s
+P50 latency: 2.02 s
+P95 latency: 3.70 s
+P99 latency: 3.83 s
 """
