@@ -15,11 +15,15 @@ from nanovllm.engine.model_runner import ModelRunner
 class LLMEngine:
 
     def __init__(self, model, **kwargs):
+        self.ps = []
+        self.events = []
+        self.model_runner = None
+        self.tokenizer = None
+        self.scheduler = None
+        self._closed = False
         config_fields = {field.name for field in fields(Config)}
         config_kwargs = {k: v for k, v in kwargs.items() if k in config_fields}
         config = Config(model, **config_kwargs)
-        self.ps = []
-        self.events = []
         ctx = mp.get_context("spawn")
         for i in range(1, config.tensor_parallel_size):
             event = ctx.Event()
@@ -38,10 +42,15 @@ class LLMEngine:
         atexit.register(self.exit)
 
     def exit(self):
-        self.model_runner.call("exit")
-        del self.model_runner
+        if self._closed:
+            return
+        self._closed = True
+        if self.model_runner is not None:
+            self.model_runner.call("exit")
+            self.model_runner = None
         for p in self.ps:
             p.join()
+        self.ps.clear()
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):

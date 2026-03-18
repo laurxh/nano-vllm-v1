@@ -1,122 +1,266 @@
 {
     "project": "nano-vllm",
     "goal": "完成：零开销前缀缓存",
-    "tasks": [
-        
+    "phases": [
         {
-            "id": "task-1",
-            "name": "重构前缀缓存为 Radix Tree",
-            "objective": "将现有 Hash 前缀缓存升级为基于前缀路径的缓存管理",
+            "id": "phase-1",
+            "name": "重构缓存数据结构",
+            "objective": "将当前基于 Prefix-Hash 的前缀缓存升级为基于 Radix Tree 的前缀索引，同时保持底层 KV block 布局不变",
             "completed": false,
             "target_files": [
-                "nanovllm/engine/block_manager.py",
-                "nanovllm/engine/sequence.py"
+                "nanovllm/engine/block_manager.py"
             ],
-            "subtasks": [
+            "tasks": [
                 {
-                    "id": "task-1-1",
+                    "id": "phase-1-task-1",
                     "name": "设计 Radix Tree 节点结构",
                     "completed": false,
                     "details": [
-                        "定义节点的 token 前缀表示",
-                        "定义节点与 block 的映射关系",
-                        "定义节点引用计数和可淘汰状态"
-                    ]
-                },
-                {
-                    "id": "task-1-2",
-                    "name": "实现最长前缀匹配",
-                    "completed": false,
-                    "details": [
-                        "请求进入时沿树查找可复用前缀",
-                        "返回命中的 cached tokens / cached blocks",
-                        "为未命中后缀保留新块分配入口"
-                    ]
-                },
-                {
-                    "id": "task-1-3",
-                    "name": "实现插入与更新逻辑",
-                    "completed": false,
-                    "details": [
-                        "prefill 完成整块后将其写入树",
-                        "维护 prefix node 与 block 的双向关系",
-                        "支持部分命中后继续扩展前缀路径"
-                    ]
-                },
-                {
-                    "id": "task-4-4",
-                    "name": "实现淘汰与回收策略",
-                    "completed": false,
-                    "details": [
-                        "在 block ref_count 降为 0 时进入可淘汰集合",
-                        "定义 O(1) 或近似 O(1) 的 victim 选择路径",
-                        "淘汰时同步清理 radix tree 中无效节点"
-                    ]
-                },
-                {
-                    "id": "task-1-5",
-                    "name": "重写 BlockManager 主流程",
-                    "completed": false,
-                    "details": [
-                        "重写 allocate",
-                        "重写 deallocate",
-                        "重写 can_allocate / can_append / may_append",
-                        "保证 chunked prefill 与 prefix cache 同时工作"
+                        "新增 RadixNode，维护 token 前缀段、parent、children、block_id、ref_count、evictable 等字段",
+                        "保留现有 Block 结构，并补充 block 与 radix node 的关联关系",
+                        "继续复用 blocks、free_block_ids、used_block_ids，避免同时改动底层显存布局"
                     ]
                 }
             ]
         },
         {
-            "id": "task-2",
-            "name": "联调与验证",
-            "objective": "确认radix prefix cache 在现有引擎中行为正确",
+            "id": "phase-2",
+            "name": "实现最长前缀匹配",
+            "objective": "请求进入 waiting queue 时通过 Radix Tree 查找最长可复用前缀，不再依赖 hash_to_block_id 的链式匹配",
+            "completed": false,
+            "target_files": [
+                "nanovllm/engine/block_manager.py"
+            ],
+            "tasks": [
+                {
+                    "id": "phase-2-task-1",
+                    "name": "重写前缀命中计算",
+                    "completed": false,
+                    "details": [
+                        "重写 get_token_layout，按 block 粒度执行最长前缀匹配",
+                        "返回命中的已使用块 token 数、命中的空闲可复用块 token 数、未命中的 token 数",
+                        "遇到第一个未命中块后停止继续复用"
+                    ]
+                },
+                {
+                    "id": "phase-2-task-2",
+                    "name": "补充 Radix Tree 辅助函数",
+                    "completed": false,
+                    "details": [
+                        "实现 _match_prefix",
+                        "实现子节点查找与必要的节点拆分逻辑",
+                        "实现命中路径上的 block 收集逻辑"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "phase-3",
+            "name": "重写分配逻辑",
+            "objective": "仅为未命中的后缀分配新 block，命中的前缀直接复用",
+            "completed": false,
+            "target_files": [
+                "nanovllm/engine/block_manager.py"
+            ],
+            "tasks": [
+                {
+                    "id": "phase-3-task-1",
+                    "name": "重写 allocate",
+                    "completed": false,
+                    "details": [
+                        "先通过 Radix Tree 找到最长前缀命中路径",
+                        "对命中的 block 增加 ref_count，必要时将可复用块重新激活",
+                        "仅为未命中的后缀申请新 block，并更新 seq.block_table"
+                    ]
+                },
+                {
+                    "id": "phase-3-task-2",
+                    "name": "约束非满块缓存策略",
+                    "completed": false,
+                    "details": [
+                        "第一版保持只有整块进入 prefix cache",
+                        "最后一个非满 block 仍作为运行时块处理，不写入 Radix Tree",
+                        "降低首版实现复杂度并保持与当前 block 语义兼容"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "phase-4",
+            "name": "重写释放与淘汰",
+            "objective": "在 block 引用归零后进入可复用或可淘汰状态，并实现 O(1) 或近似 O(1) 的 victim 选择",
+            "completed": false,
+            "target_files": [
+                "nanovllm/engine/block_manager.py"
+            ],
+            "tasks": [
+                {
+                    "id": "phase-4-task-1",
+                    "name": "重写 deallocate",
+                    "completed": false,
+                    "details": [
+                        "区分 prefix cache block 与临时 block",
+                        "prefix cache block 在 ref_count 降为 0 时进入 evictable 集合",
+                        "临时 block 直接回收到 free_block_ids"
+                    ]
+                },
+                {
+                    "id": "phase-4-task-2",
+                    "name": "实现 O(1) 近似淘汰路径",
+                    "completed": false,
+                    "details": [
+                        "新增 evictable_block_ids 队列或等价结构",
+                        "分配时优先使用 free_block_ids，不足时再弹出 evictable victim",
+                        "避免全表扫描 block 或 radix tree"
+                    ]
+                },
+                {
+                    "id": "phase-4-task-3",
+                    "name": "实现淘汰清理逻辑",
+                    "completed": false,
+                    "details": [
+                        "实现 _evict_block",
+                        "实现沿父链清理失效 radix node 的逻辑",
+                        "淘汰时同步维护 block 与 radix node 的双向关系"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "phase-5",
+            "name": "补充 Sequence 状态",
+            "objective": "为 preempt、resume、append 等场景提供更稳定的前缀缓存状态描述",
+            "completed": false,
+            "target_files": [
+                "nanovllm/engine/sequence.py"
+            ],
+            "tasks": [
+                {
+                    "id": "phase-5-task-1",
+                    "name": "扩展 Sequence 字段",
+                    "completed": false,
+                    "details": [
+                        "新增 cached_block_ids、new_block_ids、last_prefix_node 或等价状态",
+                        "保留 num_cached_tokens、num_new_tokens、block_table 以兼容现有模型执行流程",
+                        "确保 preempt / resume / append 时不会破坏 prefix cache 引用状态"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "phase-6",
+            "name": "适配调度器",
+            "objective": "保持 Scheduler 对外行为稳定，但底层接入新的 Radix Tree prefix cache 语义",
             "completed": false,
             "target_files": [
                 "nanovllm/engine/scheduler.py",
-                "nanovllm/engine/model_runner.py",
                 "nanovllm/engine/block_manager.py",
                 "nanovllm/engine/sequence.py"
             ],
-            "subtasks": [
+            "tasks": [
                 {
-                    "id": "task-2-1",
-                    "name": "验证无前缀命中场景",
+                    "id": "phase-6-task-1",
+                    "name": "适配 waiting 阶段调度",
                     "completed": false,
                     "details": [
-                        "确认全量未命中时功能正确",
-                        "确认不会因为 chunked prefill 引入重复计算或状态错乱"
+                        "在 waiting queue 中先执行 radix longest-prefix-match",
+                        "根据命中前缀与未命中后缀计算 token budget",
+                        "保持 chunked prefill 与 prefix cache 兼容"
                     ]
                 },
                 {
-                    "id": "task-2-2",
-                    "name": "验证前缀命中场景",
+                    "id": "phase-6-task-2",
+                    "name": "适配 preempt 与恢复流程",
                     "completed": false,
                     "details": [
-                        "确认共享 prompt 能复用 cached blocks",
-                        "确认命中后只 prefill 未命中部分"
+                        "preempt 时释放运行态引用，但保留仍可复用的 prefix cache",
+                        "恢复调度时重新命中已有前缀路径",
+                        "避免 block_table 与 radix tree 状态不一致"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "phase-7",
+            "name": "实现增量写回",
+            "objective": "在 prefill 或 decode 过程中，一旦形成完整 block 就写入 Radix Tree 参与后续复用",
+            "completed": false,
+            "target_files": [
+                "nanovllm/engine/block_manager.py",
+                "nanovllm/engine/scheduler.py"
+            ],
+            "tasks": [
+                {
+                    "id": "phase-7-task-1",
+                    "name": "重写 may_append",
+                    "completed": false,
+                    "details": [
+                        "当追加形成完整 block 时计算 token 段并插入 Radix Tree",
+                        "更新 block 与 radix node 的双向关系",
+                        "非整块仍只占位，不进入 prefix cache"
                     ]
                 },
                 {
-                    "id": "task-2-3",
-                    "name": "验证长短请求混合场景",
+                    "id": "phase-7-task-2",
+                    "name": "校验 postprocess 状态推进",
                     "completed": false,
                     "details": [
-                        "确认长 prompt 不会阻塞 decode",
-                        "确认多请求并发下调度公平性可接受"
+                        "确认 num_cached_tokens 的推进仅覆盖已经稳定写回的部分",
+                        "避免把尚未进入 prefix cache 的 block 错误标记为 cached",
+                        "保持 decode 场景下 block_table、slot_mapping 和缓存状态一致"
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "phase-8",
+            "name": "联调与验证",
+            "objective": "优先确保行为正确，其次验证低命中和高命中场景下的性能特征",
+            "completed": false,
+            "target_files": [
+                "nanovllm/engine/block_manager.py",
+                "nanovllm/engine/scheduler.py",
+                "nanovllm/engine/model_runner.py",
+                "nanovllm/engine/sequence.py"
+            ],
+            "tasks": [
+                {
+                    "id": "phase-8-task-1",
+                    "name": "验证全未命中场景",
+                    "completed": false,
+                    "details": [
+                        "不同 prompt 完全无共享前缀时结果正确",
+                        "确认 chunked prefill 不引入重复计算或状态错乱",
+                        "确认全未命中时调度与缓存管理额外开销可控"
                     ]
                 },
                 {
-                    "id": "task-2-4",
-                    "name": "验证边界条件",
+                    "id": "phase-8-task-2",
+                    "name": "验证完全命中与部分命中场景",
                     "completed": false,
                     "details": [
-                        "短 prompt",
-                        "超长 prompt",
-                        "block 边界对齐与非对齐",
-                        "请求被 preempt 后恢复"
+                        "相同 prompt 多次请求时可直接复用前缀块",
+                        "共享前缀但后缀不同的请求只计算未命中部分",
+                        "验证 block 边界对齐与非对齐情况下的命中行为"
+                    ]
+                },
+                {
+                    "id": "phase-8-task-3",
+                    "name": "验证复杂调度与边界条件",
+                    "completed": false,
+                    "details": [
+                        "验证长短请求混合并发下的公平性和稳定性",
+                        "验证短 prompt、超长 prompt、preempt 后恢复",
+                        "确认 model_runner 和 attention 侧无需修改 block_table 消费逻辑"
                     ]
                 }
             ]
         }
+    ],
+    "implementation_order": [
+        "优先重构 nanovllm/engine/block_manager.py 中的数据结构与前缀匹配逻辑",
+        "随后扩展 nanovllm/engine/sequence.py 的运行时状态",
+        "再适配 nanovllm/engine/scheduler.py 的 waiting、preempt、postprocess 路径",
+        "最后完成增量写回与联调验证"
     ]
 }
