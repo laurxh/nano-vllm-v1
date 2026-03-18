@@ -57,6 +57,7 @@ class LLMEngine:
             prompt = self.tokenizer.encode(prompt)
         seq = Sequence(prompt, sampling_params)
         self.scheduler.add(seq)
+        return seq.seq_id
 
     def step(self):
         seqs = self.scheduler.schedule()
@@ -65,6 +66,24 @@ class LLMEngine:
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
         num_total_tokens = sum(len(seq) for seq in seqs if seq.is_finished)
         return outputs, num_total_tokens
+
+    def step_with_events(self):
+        seqs = self.scheduler.schedule()
+        token_ids, seq_need_compute_logits = self.model_runner.call("run", seqs)
+        self.scheduler.postprocess(seqs, token_ids, seq_need_compute_logits)
+        outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
+        num_total_tokens = sum(len(seq) for seq in seqs if seq.is_finished)
+        events = []
+        for seq_index in seq_need_compute_logits:
+            seq = seqs[int(seq_index)]
+            events.append(
+                {
+                    "seq_id": seq.seq_id,
+                    "token_ids": list(seq.completion_token_ids),
+                    "is_finished": seq.is_finished,
+                }
+            )
+        return outputs, num_total_tokens, events
 
     def is_finished(self):
         return self.scheduler.is_finished()

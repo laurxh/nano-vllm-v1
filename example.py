@@ -36,3 +36,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+Prompt: '<|im_start|>user\nintroduce yourself<|im_end|>\n<|im_start|>assistant\n'
+Completion: "<think>\nOkay, the user wants me to introduce myself. Let me start by recalling my training and experiences. I've been training for years, working in different areas like customer service, project management, and digital marketing. I've worked in various industries, so I can mention a few examples. I should be friendly and open to learning more. I need to keep it simple and concise, avoiding any technical jargon. Also, make sure to highlight my skills and how I can help the user. Let me check if I have any specific details I should include, like my name, experience, or areas of expertise. I think that's all. Now, I'll put it all together in a natural way.\n</think>\n\nHello! I'm [Your Name], and I've been training in various fields like customer service, project management, and digital marketing for years. I've worked in different industries, and I'm passionate about helping others in these areas. I'm always looking to learn and grow, so feel free to ask questions! 😊<|im_end|>"
+"""
